@@ -19,3 +19,6 @@ git branch -d feature/new-article-name
 
 # 3. リモートの作業ブランチも削除（もしGitHub上で消し忘れていたら）
 git push origin --delete feature/new-article-name
+
+
+...
