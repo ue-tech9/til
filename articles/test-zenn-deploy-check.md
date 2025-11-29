@@ -1,9 +1,21 @@
+---
+title: "ZennとGitHub連携のテスト"
+emoji: "🕌"
+type: "tech" # tech: 技術記事 / idea: アイデア
+topics: ["zenn", "github", "test"]
+published: false
+---
+
 # 1. 念のため最新の状態にする
 git checkout main
 git pull origin main
 
 git add .
 git commit -m "docs: add new article"
+
+# git push origin main
+
+
 # 1. 今の状態（コミット済み）のまま、ブランチを作成して移動する
 git checkout -b feature/new-article-name
 
