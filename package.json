@@ -1,0 +1,18 @@
+{
+  "name": "til",
+  "version": "1.0.0",
+  "description": "> **Today I Learned** > > **TIL とは「Today I Learned（今日学んだこと）」の略です。** > 日々いろいろな言語や技術について学んだ、小さな発見を短くまとめたコレクションです。 > どれもフルのブログ記事にするほどではないけれど、メモしておきたいことたち。 > > 公開しながら学ぶ（Learning In Public™）ことや、実務での優秀な仲間たちと協力する中で得た知見をまとめています。",
+  "main": "index.js",
+  "directories": {
+    "example": "examples"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "zenn-cli": "^0.2.3"
+  }
+}
