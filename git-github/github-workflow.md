@@ -7,9 +7,8 @@ Tags: #git #github #workflow #beginner
 This document outlines the standard workflow for solo development on GitHub.
 It covers the cycle from creating an Issue, branching locally, committing changes, opening a Pull Request with keyword linking, merging, and finally cleaning up the local environment.
 
-## Japanese Details
-GitHubにおける標準的な作業フロー（Golden Path）の手順書です。
-Issue作成から、ブランチ作成、PR、マージ、そしてローカル環境のお掃除までの一連の流れを日英併記でまとめました。
+## Japanese Summary
+このドキュメントは、GitHubで個人開発を進める際の標準ワークフロー（Golden Path）をまとめたものです。Issue作成から、ローカルでのブランチ作成・コミット、キーワード連携付きPull Request作成、マージ、最後にローカル環境のクリーンアップまでの一連の流れを扱います。
 
 ---
 
@@ -154,10 +153,10 @@ git checkout main && git pull origin main
 git checkout -b docs/add-workflow-guide
 
 # Work & save
-git status                              # 何が変わったか確認
-git add .                               # ステージング
-git commit -m "docs: add standard github workflow guide"   # コミット
-git push -u origin HEAD                 # 初回プッシュ
+git status                         
+git add .   
+git commit -m "docs: add standard github workflow guide"  
+git push -u origin HEAD            
 
 # After PR merged
 git checkout main && git pull origin main
