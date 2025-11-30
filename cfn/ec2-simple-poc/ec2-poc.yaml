@@ -1,45 +1,31 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Full Stack EC2 PoC (VPC, IGW, RouteTable, EC2) - Dynamic Naming
+Description: Full Stack EC2 PoC (Auto KeyPair & SSM Access)
 
-# ============================================================
-# Metadata: コンソール表示をわかりやすくするための設定
-# ============================================================
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
       - Label: 
-          default: "① Server Configuration (サーバー設定)"
+          default: "① Server Configuration"
         Parameters:
           - TargetAZ       
           - OsVersion
           - InstanceType
       - Label: 
-          default: "② Access & Security (アクセス権限)"
+          default: "② Access & Security"
         Parameters:
-          - KeyName
-          - MyIpAddress
+          # KeyName は自動生成するので削除しました
+          - AllowedCidr
     ParameterLabels:
       TargetAZ:
         default: "Target Availability Zone" 
-      OsVersion:
-        default: "OS Version (Amazon Linux)"
-      InstanceType:
-        default: "Instance Type (Spec)"
-      KeyName:
-        default: "SSH Key Pair Name"
-      MyIpAddress:
-        default: "Allowed SSH IP (CIDR)"
+      AllowedCidr:
+        default: "SSH Allowed CIDR"
 
-# ============================================================
-# Parameters: 選択肢の定義
-# ============================================================
 Parameters:
-  # ▼▼▼ 追加: AZを選択するパラメータ ▼▼▼
   TargetAZ:
-    Description: Select the Availability Zone (e.g., ap-northeast-1a).
+    Description: Select the Availability Zone.
     Type: AWS::EC2::AvailabilityZone::Name
-  # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
-
+  
   OsVersion:
     Type: String
     Default: AmazonLinux2
@@ -55,30 +41,32 @@ Parameters:
       - t3.micro
       - t3.small
       - t3.medium
-      - m5.large
     Description: Select EC2 instance type.
 
-  KeyName:
-    Description: Select an existing EC2 KeyPair for SSH access.
-    Type: AWS::EC2::KeyPair::KeyName
-
-  MyIpAddress:
+  AllowedCidr:
     Type: String
-    Default: 0.0.0.0/0
-    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
-    Description: IP address range allowed to SSH to the instance.
+    # ▼ ここをVPCのCIDR(10.0.0.0/16)にすると、外部からSSHできなくなります
+    #   その代わり、Session Managerで接続できるようにIAMを設定します。
+    Default: 10.0.0.0/16
+    Description: IP range allowed for SSH (22). If restricted, use Session Manager.
 
-# ------------------------------------------------------------
-# Conditions
-# ------------------------------------------------------------
 Conditions:
   IsAmazonLinux2: !Equals [ !Ref OsVersion, "AmazonLinux2" ]
 
-# ------------------------------------------------------------
-# Resources
-# ------------------------------------------------------------
 Resources:
-  # --- Network Layer ---
+  # ============================================================
+  # 1. Key Pair (自動生成・スタック削除時に消える)
+  # ============================================================
+  PoCKeyPair:
+    Type: AWS::EC2::KeyPair
+    Properties:
+      KeyName: !Sub "${AWS::StackName}-key"
+      KeyType: rsa
+      KeyFormat: pem
+
+  # ============================================================
+  # 2. Network Layer
+  # ============================================================
   PoCVPC:
     Type: AWS::EC2::VPC
     Properties:
@@ -91,10 +79,6 @@ Resources:
 
   PoCIGW:
     Type: AWS::EC2::InternetGateway
-    Properties:
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-igw"
 
   PoCIGWAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -107,9 +91,7 @@ Resources:
     Properties:
       VpcId: !Ref PoCVPC
       CidrBlock: 10.0.1.0/24
-      # ▼▼▼ 修正: 自動選択ではなく、パラメータで選んだAZを使用 ▼▼▼
       AvailabilityZone: !Ref TargetAZ 
-      # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
@@ -119,9 +101,6 @@ Resources:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref PoCVPC
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-rtb"
 
   PoCRoute:
     Type: AWS::EC2::Route
@@ -137,35 +116,62 @@ Resources:
       SubnetId: !Ref PoCSubnet
       RouteTableId: !Ref PoCRouteTable
 
-  # --- Security Layer ---
+  # ============================================================
+  # 3. Security Layer
+  # ============================================================
   PoCSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: !Sub "Allow SSH for ${AWS::StackName}"
-      GroupName: !Sub "${AWS::StackName}-sg"
+      GroupDescription: Allow SSH and Outbound
       VpcId: !Ref PoCVPC
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
-          CidrIp: !Ref MyIpAddress
+          CidrIp: !Ref AllowedCidr
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-sg"
 
-  # --- Compute Layer ---
+  # ============================================================
+  # 4. IAM Role for Session Manager (SSH不要で接続するための権限)
+  # ============================================================
+  SSMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-ssm-role"
+
+  SSMInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref SSMRole
+
+  # ============================================================
+  # 5. Compute Layer
+  # ============================================================
   PoCInstance:
     Type: AWS::EC2::Instance
     Properties:
       ImageId: !If 
         - IsAmazonLinux2
-        - !Resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
-        - !Resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+        - '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2}}'
+        - '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
       InstanceType: !Ref InstanceType
-      KeyName: !Ref KeyName
-      # ▼▼▼ 修正: AZを明示的に指定（Subnet経由で決まりますが念のため） ▼▼▼
+      KeyName: !Ref PoCKeyPair
+      IamInstanceProfile: !Ref SSMInstanceProfile # SSM権限を追加
       AvailabilityZone: !Ref TargetAZ
-      # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
       NetworkInterfaces: 
         - AssociatePublicIpAddress: true
           DeviceIndex: 0
@@ -181,23 +187,13 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-ec2"
-        - Key: OS
-          Value: !Ref OsVersion
-        - Key: Environment
-          Value: PoC
 
-# ------------------------------------------------------------
-# Outputs
-# ------------------------------------------------------------
 Outputs:
   InstanceId:
     Value: !Ref PoCInstance
-  PublicIP:
-    Description: SSH Target IP
-    Value: !GetAtt PoCInstance.PublicIp
-  AvailabilityZone:
-    Description: Deployed AZ
-    Value: !GetAtt PoCInstance.AvailabilityZone
-  SSHCommand:
-    Description: Copy this command to connect
-    Value: !Sub "ssh -i ${KeyName}.pem ec2-user@${PoCInstance.PublicIp}"
+  ConnectWithSSM:
+    Description: Click this link to connect (No SSH Key needed)
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/systems-manager/session-manager/${PoCInstance}"
+  KeyParameterStoreName:
+    Description: Private Key is stored here (SSM Parameter Store)
+    Value: !Sub "/ec2/keypair/${PoCKeyPair}"
