@@ -1,25 +1,29 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Full Stack EC2 PoC (Auto KeyPair & SSM Access)
+Description: Full Stack EC2 PoC (Linux + Windows JumpHost) with Version Select
 
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
       - Label: 
-          default: "① Server Configuration"
+          default: "① Linux Configuration"
         Parameters:
-          - TargetAZ       
           - OsVersion
           - InstanceType
       - Label: 
-          default: "② Access & Security"
+          default: "② Windows Configuration"
         Parameters:
-          # KeyName は自動生成するので削除しました
+          - WindowsServerVersion # ★追加
+          - WindowsInstanceType
+      - Label: 
+          default: "③ Network & Access"
+        Parameters:
+          - TargetAZ       
+          - EnableInternetAccess
+          - EnableVPCEndpoints
           - AllowedCidr
     ParameterLabels:
-      TargetAZ:
-        default: "Target Availability Zone" 
-      AllowedCidr:
-        default: "SSH Allowed CIDR"
+      WindowsServerVersion:
+        default: "Windows Server Version"
 
 Parameters:
   TargetAZ:
@@ -32,7 +36,7 @@ Parameters:
     AllowedValues:
       - AmazonLinux2023
       - AmazonLinux2
-    Description: Select the OS version.
+    Description: Select the OS version for Linux Server.
 
   InstanceType:
     Type: String
@@ -41,21 +45,52 @@ Parameters:
       - t3.micro
       - t3.small
       - t3.medium
-    Description: Select EC2 instance type.
+    Description: Select Linux instance type.
+
+  # ▼▼▼ 追加：Windowsバージョンの選択 ▼▼▼
+  WindowsServerVersion:
+    Type: String
+    Default: "2022"
+    AllowedValues:
+      - "2022"
+      - "2019"
+      - "2016"
+    Description: Select Windows Server OS version.
+
+  WindowsInstanceType:
+    Type: String
+    Default: t3.large
+    AllowedValues:
+      - t3.medium
+      - t3.large
+      - m5.large
+    Description: Select Windows instance type (t3.large recommended).
+  
+  EnableInternetAccess:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: If false, IGW is removed (Closed Network).
+
+  EnableVPCEndpoints:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Required for SSM/Yum if IGW is removed.
 
   AllowedCidr:
     Type: String
-    # ▼ ここをVPCのCIDR(10.0.0.0/16)にすると、外部からSSHできなくなります
-    #   その代わり、Session Managerで接続できるようにIAMを設定します。
     Default: 10.0.0.0/16
-    Description: IP range allowed for SSH (22). If restricted, use Session Manager.
+    Description: IP range allowed for SSH (22) and App Ports.
 
 Conditions:
   IsAmazonLinux2: !Equals [ !Ref OsVersion, "AmazonLinux2" ]
+  IsInternetEnabled: !Equals [ !Ref EnableInternetAccess, "true" ]
+  IsEndpointsEnabled: !Equals [ !Ref EnableVPCEndpoints, "true" ]
 
 Resources:
   # ============================================================
-  # 1. Key Pair (自動生成・スタック削除時に消える)
+  # Key Pair (Common for Linux & Windows)
   # ============================================================
   PoCKeyPair:
     Type: AWS::EC2::KeyPair
@@ -63,9 +98,10 @@ Resources:
       KeyName: !Sub "${AWS::StackName}-key"
       KeyType: rsa
       KeyFormat: pem
+      # 作成された秘密鍵は自動的に SSM Parameter Store に保存されます
 
   # ============================================================
-  # 2. Network Layer
+  # Base Network
   # ============================================================
   PoCVPC:
     Type: AWS::EC2::VPC
@@ -79,9 +115,11 @@ Resources:
 
   PoCIGW:
     Type: AWS::EC2::InternetGateway
+    Condition: IsInternetEnabled
 
   PoCIGWAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
+    Condition: IsInternetEnabled
     Properties:
       VpcId: !Ref PoCVPC
       InternetGatewayId: !Ref PoCIGW
@@ -95,7 +133,7 @@ Resources:
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-public-subnet"
+          Value: !Sub "${AWS::StackName}-subnet"
 
   PoCRouteTable:
     Type: AWS::EC2::RouteTable
@@ -104,6 +142,7 @@ Resources:
 
   PoCRoute:
     Type: AWS::EC2::Route
+    Condition: IsInternetEnabled
     DependsOn: PoCIGWAttachment
     Properties:
       RouteTableId: !Ref PoCRouteTable
@@ -117,24 +156,103 @@ Resources:
       RouteTableId: !Ref PoCRouteTable
 
   # ============================================================
-  # 3. Security Layer
+  # VPC Endpoints
+  # ============================================================
+  VpceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: IsEndpointsEnabled
+    Properties:
+      GroupDescription: Allow HTTPS for VPC Endpoints
+      VpcId: !Ref PoCVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.0.0.0/16
+
+  SSMEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: IsEndpointsEnabled
+    Properties:
+      VpcId: !Ref PoCVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssm"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [ !Ref PoCSubnet ]
+      SecurityGroupIds: [ !Ref VpceSecurityGroup ]
+
+  EC2MessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: IsEndpointsEnabled
+    Properties:
+      VpcId: !Ref PoCVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ec2messages"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [ !Ref PoCSubnet ]
+      SecurityGroupIds: [ !Ref VpceSecurityGroup ]
+
+  SSMMessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: IsEndpointsEnabled
+    Properties:
+      VpcId: !Ref PoCVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssmmessages"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [ !Ref PoCSubnet ]
+      SecurityGroupIds: [ !Ref VpceSecurityGroup ]
+
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: IsEndpointsEnabled
+    Properties:
+      VpcId: !Ref PoCVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcEndpointType: Gateway
+      RouteTableIds: [ !Ref PoCRouteTable ]
+
+  # ============================================================
+  # Security Groups
   # ============================================================
   PoCSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow SSH and Outbound
+      GroupDescription: Allow SSH and App Ports (8000-8003, 8888)
       VpcId: !Ref PoCVPC
       SecurityGroupIngress:
+        # 1. SSH (22)
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
           CidrIp: !Ref AllowedCidr
+        
+        # 2. Port 8000 - 8003 (VPC内部 & AllowedCidr)
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8003
+          CidrIp: 10.0.0.0/16
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8003
+          CidrIp: !Ref AllowedCidr
+
+        # 3. Port 8888 (VPC内部 & AllowedCidr)
+        - IpProtocol: tcp
+          FromPort: 8888
+          ToPort: 8888
+          CidrIp: 10.0.0.0/16
+        - IpProtocol: tcp
+          FromPort: 8888
+          ToPort: 8888
+          CidrIp: !Ref AllowedCidr
+
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-sg"
 
   # ============================================================
-  # 4. IAM Role for Session Manager (SSH不要で接続するための権限)
+  # IAM Role
   # ============================================================
   SSMRole:
     Type: AWS::IAM::Role
@@ -148,9 +266,6 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-ssm-role"
 
   SSMInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -159,7 +274,7 @@ Resources:
         - !Ref SSMRole
 
   # ============================================================
-  # 5. Compute Layer
+  # Compute (Linux)
   # ============================================================
   PoCInstance:
     Type: AWS::EC2::Instance
@@ -170,13 +285,12 @@ Resources:
         - '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
       InstanceType: !Ref InstanceType
       KeyName: !Ref PoCKeyPair
-      IamInstanceProfile: !Ref SSMInstanceProfile # SSM権限を追加
+      IamInstanceProfile: !Ref SSMInstanceProfile
       AvailabilityZone: !Ref TargetAZ
       NetworkInterfaces: 
         - AssociatePublicIpAddress: true
           DeviceIndex: 0
-          GroupSet: 
-            - !Ref PoCSecurityGroup
+          GroupSet: [ !Ref PoCSecurityGroup ]
           SubnetId: !Ref PoCSubnet
       UserData:
         Fn::Base64: !Sub |
@@ -186,14 +300,44 @@ Resources:
           $TOOL install -y git jq
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-ec2"
+          Value: !Sub "${AWS::StackName}-linux"
+
+  # ============================================================
+  # Compute (Windows Server) - Jump Host
+  # ============================================================
+  PoCWindowsInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      # ▼▼▼ 選択されたバージョンに基づいてAMIを動的に解決 ▼▼▼
+      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-windows-latest/Windows_Server-${WindowsServerVersion}-English-Full-Base}}'
+      InstanceType: !Ref WindowsInstanceType
+      KeyName: !Ref PoCKeyPair
+      IamInstanceProfile: !Ref SSMInstanceProfile
+      AvailabilityZone: !Ref TargetAZ
+      NetworkInterfaces: 
+        - AssociatePublicIpAddress: true
+          DeviceIndex: 0
+          GroupSet: [ !Ref PoCSecurityGroup ]
+          SubnetId: !Ref PoCSubnet
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-windows-${WindowsServerVersion}"
 
 Outputs:
-  InstanceId:
+  LinuxInstanceId:
     Value: !Ref PoCInstance
-  ConnectWithSSM:
-    Description: Click this link to connect (No SSH Key needed)
-    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/systems-manager/session-manager/${PoCInstance}"
-  KeyParameterStoreName:
-    Description: Private Key is stored here (SSM Parameter Store)
+    Description: Linux Server ID
+  LinuxPrivateIP:
+    Value: !GetAtt PoCInstance.PrivateIp
+    Description: Use this IP in Windows Browser (e.g. http://10.0.x.x:8000)
+  WindowsInstanceId:
+    Value: !Ref PoCWindowsInstance
+    Description: Jump Host (Connect via Fleet Manager)
+  ConnectToWindows:
+    Description: Fleet Manager RDP Link
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/systems-manager/fleet-manager/rdp?instanceId=${PoCWindowsInstance}"
+  
+  # ▼▼▼ 追加：秘密鍵の場所 ▼▼▼
+  PrivateKeyLocation:
+    Description: Retrieve Private Key content from here to decrypt Windows password
     Value: !Sub "/ec2/keypair/${PoCKeyPair}"
