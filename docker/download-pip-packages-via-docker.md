@@ -247,3 +247,24 @@ tar xzf ./assets/npm/npm-bundle.tar.gz
   * **Pip Command:** 初期状態のOSには `pip` コマンドがないことが多いため、`bundle_assets.sh` 内で `python3-pip` をダウンロードリストに含めています。
   * **Permission:** 生成された `assets` フォルダが削除できない場合は、`sudo rm -rf assets` を使ってください。
 
+### 参考　　docker install 
+
+# 1. システムの更新
+sudo yum update -y
+
+# 2. Dockerのインストール (amazon-linux-extras を使用)
+sudo amazon-linux-extras install docker -y
+
+# 3. Dockerサービスの起動
+sudo service docker start
+
+# 4. 自動起動の設定 (OS再起動時用)
+sudo systemctl enable docker
+
+# 5. ★重要: 現在のユーザーを docker グループに追加
+# (これをしないと、毎回 sudo docker ... と打つ必要があり、スクリプトが動きません)
+sudo usermod -a -G docker $(whoami)
+
+# 6. グループ設定を反映させるために、一度ログアウトして再ログインする
+# (または以下のコマンドで一時的に反映させる)
+newgrp docker
