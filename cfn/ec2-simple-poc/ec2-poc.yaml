@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Full Stack EC2 PoC (Linux + Windows JumpHost) with Version Select
+Description: Full Stack EC2 PoC (Linux + Windows JumpHost) with Version & Volume Select
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -9,11 +9,13 @@ Metadata:
         Parameters:
           - OsVersion
           - InstanceType
+          - LinuxVolumeSize # ★追加
       - Label: 
           default: "② Windows Configuration"
         Parameters:
-          - WindowsServerVersion # ★追加
+          - WindowsServerVersion
           - WindowsInstanceType
+          - WindowsVolumeSize # ★追加
       - Label: 
           default: "③ Network & Access"
         Parameters:
@@ -24,6 +26,10 @@ Metadata:
     ParameterLabels:
       WindowsServerVersion:
         default: "Windows Server Version"
+      LinuxVolumeSize:
+        default: "Linux Volume Size (GB)"
+      WindowsVolumeSize:
+        default: "Windows Volume Size (GB)"
 
 Parameters:
   TargetAZ:
@@ -47,7 +53,14 @@ Parameters:
       - t3.medium
     Description: Select Linux instance type.
 
-  # ▼▼▼ 追加：Windowsバージョンの選択 ▼▼▼
+  # ▼▼▼ 追加：Linuxボリュームサイズ ▼▼▼
+  LinuxVolumeSize:
+    Type: Number
+    Default: 50
+    MinValue: 8
+    MaxValue: 16000
+    Description: Size of the root volume for Linux (GB).
+
   WindowsServerVersion:
     Type: String
     Default: "2022"
@@ -65,6 +78,14 @@ Parameters:
       - t3.large
       - m5.large
     Description: Select Windows instance type (t3.large recommended).
+
+  # ▼▼▼ 追加：Windowsボリュームサイズ ▼▼▼
+  WindowsVolumeSize:
+    Type: Number
+    Default: 50
+    MinValue: 30
+    MaxValue: 16000
+    Description: Size of the root volume for Windows (GB).
   
   EnableInternetAccess:
     Type: String
@@ -74,7 +95,7 @@ Parameters:
 
   EnableVPCEndpoints:
     Type: String
-    Default: "false"
+    Default: "true" # ★変更: デフォルトをTrueに
     AllowedValues: ["true", "false"]
     Description: Required for SSM/Yum if IGW is removed.
 
@@ -98,7 +119,6 @@ Resources:
       KeyName: !Sub "${AWS::StackName}-key"
       KeyType: rsa
       KeyFormat: pem
-      # 作成された秘密鍵は自動的に SSM Parameter Store に保存されます
 
   # ============================================================
   # Base Network
@@ -287,6 +307,13 @@ Resources:
       KeyName: !Ref PoCKeyPair
       IamInstanceProfile: !Ref SSMInstanceProfile
       AvailabilityZone: !Ref TargetAZ
+      # ▼▼▼ 追加：ボリュームサイズの指定 ▼▼▼
+      BlockDeviceMappings: 
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !Ref LinuxVolumeSize
+            VolumeType: gp3
+            DeleteOnTermination: true
       NetworkInterfaces: 
         - AssociatePublicIpAddress: true
           DeviceIndex: 0
@@ -308,12 +335,18 @@ Resources:
   PoCWindowsInstance:
     Type: AWS::EC2::Instance
     Properties:
-      # ▼▼▼ 選択されたバージョンに基づいてAMIを動的に解決 ▼▼▼
       ImageId: !Sub '{{resolve:ssm:/aws/service/ami-windows-latest/Windows_Server-${WindowsServerVersion}-English-Full-Base}}'
       InstanceType: !Ref WindowsInstanceType
       KeyName: !Ref PoCKeyPair
       IamInstanceProfile: !Ref SSMInstanceProfile
       AvailabilityZone: !Ref TargetAZ
+      # ▼▼▼ 追加：ボリュームサイズの指定 ▼▼▼
+      BlockDeviceMappings: 
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref WindowsVolumeSize
+            VolumeType: gp3
+            DeleteOnTermination: true
       NetworkInterfaces: 
         - AssociatePublicIpAddress: true
           DeviceIndex: 0
@@ -336,8 +369,6 @@ Outputs:
   ConnectToWindows:
     Description: Fleet Manager RDP Link
     Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/systems-manager/fleet-manager/rdp?instanceId=${PoCWindowsInstance}"
-  
-  # ▼▼▼ 追加：秘密鍵の場所 ▼▼▼
   PrivateKeyLocation:
     Description: Retrieve Private Key content from here to decrypt Windows password
     Value: !Sub "/ec2/keypair/${PoCKeyPair}"
