@@ -18,7 +18,7 @@ jupyter server extension disable amazon_sagemaker_sql_editor || true
 
 
 
-### 3 Docker Pull Policy (イメージ確認の無効化)
+### 2 Docker Pull Policy (イメージ確認の無効化)
 
 JupyterHubがユーザーコンテナを起動する際、デフォルトではRegistryに最新イメージを確認しに行きます。これを「Never」に設定し、ローカルにあるイメージだけを使用させます。
 
@@ -29,7 +29,7 @@ JupyterHubがユーザーコンテナを起動する際、デフォルトではR
 c.DockerSpawner.pull_policy = 'Never'
 ```
 
-### 4 Force Offline for Package Managers (パッケージ管理のオフライン化)
+### 3 Force Offline for Package Managers (パッケージ管理のオフライン化)
 
 pipやcondaがバックグラウンドでインデックス更新や通知確認を行うのを防ぎます。
 
