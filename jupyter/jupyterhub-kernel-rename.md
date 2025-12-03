@@ -36,7 +36,7 @@ Jupyterのカーネル設定は、通常以下のディレクトリ配下にフ�
  "display_name": "Python 3",
  "language": "python"
 }
-````
+```
 
 ### 2\. Command to Rename (変更コマンド)
 
