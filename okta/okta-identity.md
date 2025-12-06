@@ -6,6 +6,12 @@
 
 参考：
 
+https://developer.okta.com/docs/reference/org-defaults/
+
+https://developer.okta.com/signup/
+
+
+
 https://docs.aws.amazon.com/singlesignon/latest/userguide/gs-okta.html
 
 
