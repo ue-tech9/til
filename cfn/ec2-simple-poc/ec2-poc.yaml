@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Full Stack EC2 PoC (Public/Private Subnets with Selectable NAT/IGW + Full VPC Endpoints)
+Description: Full Stack EC2 PoC (Public/Private Subnets + R53 Private DNS + VPC Endpoints)
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -25,6 +25,10 @@ Metadata:
           - EnableInternetAccess
           - EnableVPCEndpoints
           - AllowedCidr
+      - Label:
+          default: "④ Private DNS (Route53)"
+        Parameters:
+          - PrivateDomainName
     ParameterLabels:
       CreateLinuxInstance:
         default: "Create Linux Instance?"
@@ -34,6 +38,8 @@ Metadata:
         default: "Create IGW & NAT Gateway?"
       EnableVPCEndpoints:
         default: "Create VPC Endpoints?"
+      PrivateDomainName:
+        default: "Private Hosted Zone Name"
 
 Parameters:
   TargetAZ:
@@ -118,6 +124,11 @@ Parameters:
     Default: 10.0.0.0/16
     Description: IP range allowed for SSH (22) and App Ports within SG.
 
+  PrivateDomainName:
+    Type: String
+    Default: "corp.internal"
+    Description: The domain name for the Private Hosted Zone (e.g. corp.internal).
+
 Conditions:
   BuildLinux: !Equals [ !Ref CreateLinuxInstance, "true" ]
   BuildWindows: !Equals [ !Ref CreateWindowsInstance, "true" ]
@@ -172,6 +183,34 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-private-subnet"
+
+  # ============================================================
+  # Route 53 Private Hosted Zone & Records
+  # ============================================================
+  PoCPrivateHostedZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: !Ref PrivateDomainName
+      VPCs:
+        - VPCId: !Ref PoCVPC
+          VPCRegion: !Ref AWS::Region
+      HostedZoneConfig:
+        Comment: !Sub "Private Hosted Zone for ${AWS::StackName}"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-hosted-zone"
+
+  # A Record for Linux Instance (hub.domain)
+  LinuxDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: BuildLinux
+    Properties:
+      HostedZoneId: !Ref PoCPrivateHostedZone
+      Name: !Sub "hub.${PrivateDomainName}."
+      Type: A
+      TTL: '300'
+      ResourceRecords:
+        - !GetAtt PoCInstance.PrivateIp
 
   # ============================================================
   # Internet Gateway (Optional)
@@ -475,6 +514,10 @@ Outputs:
     Condition: BuildLinux
     Value: !GetAtt PoCInstance.PrivateIp
     Description: Private IP Address
+  LinuxDnsName:
+    Condition: BuildLinux
+    Value: !Sub "hub.${PrivateDomainName}"
+    Description: Private DNS Record for Linux
   WindowsInstanceId:
     Condition: BuildWindows
     Value: !Ref PoCWindowsInstance

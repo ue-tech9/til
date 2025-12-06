@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Full Stack EC2 PoC (Selectable Linux / Windows)
+Description: Full Stack EC2 PoC (Public/Private Subnets with Selectable NAT/IGW + Full VPC Endpoints)
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -7,14 +7,14 @@ Metadata:
       - Label: 
           default: "① Linux Configuration"
         Parameters:
-          - CreateLinuxInstance # ★追加：作成有無スイッチ
+          - CreateLinuxInstance
           - OsVersion
           - InstanceType
           - LinuxVolumeSize
       - Label: 
           default: "② Windows Configuration"
         Parameters:
-          - CreateWindowsInstance # ★追加：作成有無スイッチ
+          - CreateWindowsInstance
           - WindowsServerVersion
           - WindowsInstanceType
           - WindowsVolumeSize
@@ -30,19 +30,16 @@ Metadata:
         default: "Create Linux Instance?"
       CreateWindowsInstance:
         default: "Create Windows Instance?"
-      WindowsServerVersion:
-        default: "Windows Server Version"
-      LinuxVolumeSize:
-        default: "Linux Volume Size (GB)"
-      WindowsVolumeSize:
-        default: "Windows Volume Size (GB)"
+      EnableInternetAccess:
+        default: "Create IGW & NAT Gateway?"
+      EnableVPCEndpoints:
+        default: "Create VPC Endpoints?"
 
 Parameters:
   TargetAZ:
     Description: Select the Availability Zone.
     Type: AWS::EC2::AvailabilityZone::Name
   
-  # ▼▼▼ 追加：Linux作成スイッチ ▼▼▼
   CreateLinuxInstance:
     Type: String
     Default: "true"
@@ -73,7 +70,6 @@ Parameters:
     MaxValue: 16000
     Description: Size of the root volume for Linux (GB).
 
-  # ▼▼▼ 追加：Windows作成スイッチ ▼▼▼
   CreateWindowsInstance:
     Type: String
     Default: "true"
@@ -96,7 +92,7 @@ Parameters:
       - t3.medium
       - t3.large
       - m5.large
-    Description: Select Windows instance type (t3.large recommended).
+    Description: Select Windows instance type.
 
   WindowsVolumeSize:
     Type: Number
@@ -109,24 +105,22 @@ Parameters:
     Type: String
     Default: "true"
     AllowedValues: ["true", "false"]
-    Description: If false, IGW is removed (Closed Network).
+    Description: If true, IGW and NAT Gateway are created. If false, Closed Network.
 
   EnableVPCEndpoints:
     Type: String
     Default: "true"
     AllowedValues: ["true", "false"]
-    Description: Required for SSM/Yum if IGW is removed.
+    Description: Required for SSM/Yum/Logs if Internet Access is false.
 
   AllowedCidr:
     Type: String
     Default: 10.0.0.0/16
-    Description: IP range allowed for SSH (22) and App Ports.
+    Description: IP range allowed for SSH (22) and App Ports within SG.
 
 Conditions:
-  # ▼▼▼ 追加：作成有無の判定ロジック ▼▼▼
   BuildLinux: !Equals [ !Ref CreateLinuxInstance, "true" ]
   BuildWindows: !Equals [ !Ref CreateWindowsInstance, "true" ]
-
   IsAmazonLinux2: !Equals [ !Ref OsVersion, "AmazonLinux2" ]
   IsInternetEnabled: !Equals [ !Ref EnableInternetAccess, "true" ]
   IsEndpointsEnabled: !Equals [ !Ref EnableVPCEndpoints, "true" ]
@@ -143,7 +137,7 @@ Resources:
       KeyFormat: pem
 
   # ============================================================
-  # Base Network
+  # Base Network (VPC & Subnets)
   # ============================================================
   PoCVPC:
     Type: AWS::EC2::VPC
@@ -155,18 +149,8 @@ Resources:
         - Key: Name
           Value: !Sub "${AWS::StackName}-vpc"
 
-  PoCIGW:
-    Type: AWS::EC2::InternetGateway
-    Condition: IsInternetEnabled
-
-  PoCIGWAttachment:
-    Type: AWS::EC2::VPCGatewayAttachment
-    Condition: IsInternetEnabled
-    Properties:
-      VpcId: !Ref PoCVPC
-      InternetGatewayId: !Ref PoCIGW
-
-  PoCSubnet:
+  # Public Subnet (For NAT GW / IGW)
+  PublicSubnet:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref PoCVPC
@@ -175,30 +159,112 @@ Resources:
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-subnet"
+          Value: !Sub "${AWS::StackName}-public-subnet"
 
-  PoCRouteTable:
+  # Private Subnet (For Instances & Endpoints)
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref PoCVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Ref TargetAZ 
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private-subnet"
+
+  # ============================================================
+  # Internet Gateway (Optional)
+  # ============================================================
+  PoCIGW:
+    Type: AWS::EC2::InternetGateway
+    Condition: IsInternetEnabled
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-igw"
+
+  PoCIGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Condition: IsInternetEnabled
+    Properties:
+      VpcId: !Ref PoCVPC
+      InternetGatewayId: !Ref PoCIGW
+
+  # ============================================================
+  # NAT Gateway (Optional) - Only created if InternetEnabled
+  # ============================================================
+  NatEIP:
+    Type: AWS::EC2::EIP
+    Condition: IsInternetEnabled
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-nat-eip"
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Condition: IsInternetEnabled
+    Properties:
+      AllocationId: !GetAtt NatEIP.AllocationId
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-nat-gw"
+
+  # ============================================================
+  # Route Tables
+  # ============================================================
+  # 1. Public Route Table (Goes to IGW)
+  PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref PoCVPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-rt"
 
-  PoCRoute:
+  PublicRoute:
     Type: AWS::EC2::Route
     Condition: IsInternetEnabled
     DependsOn: PoCIGWAttachment
     Properties:
-      RouteTableId: !Ref PoCRouteTable
+      RouteTableId: !Ref PublicRouteTable
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref PoCIGW
 
-  PoCSubnetRouteTableAssociation:
+  PublicSubnetRouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId: !Ref PoCSubnet
-      RouteTableId: !Ref PoCRouteTable
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # 2. Private Route Table (Goes to NAT GW if enabled, else Local only)
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref PoCVPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private-rt"
+
+  PrivateRouteToNat:
+    Type: AWS::EC2::Route
+    Condition: IsInternetEnabled
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
 
   # ============================================================
-  # VPC Endpoints
+  # VPC Endpoints (Attached to Private Subnet)
   # ============================================================
   VpceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -212,6 +278,7 @@ Resources:
           ToPort: 443
           CidrIp: 10.0.0.0/16
 
+  # --- SSM Core Endpoints ---
   SSMEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Condition: IsEndpointsEnabled
@@ -220,7 +287,7 @@ Resources:
       ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssm"
       VpcEndpointType: Interface
       PrivateDnsEnabled: true
-      SubnetIds: [ !Ref PoCSubnet ]
+      SubnetIds: [ !Ref PrivateSubnet ]
       SecurityGroupIds: [ !Ref VpceSecurityGroup ]
 
   EC2MessagesEndpoint:
@@ -231,7 +298,7 @@ Resources:
       ServiceName: !Sub "com.amazonaws.${AWS::Region}.ec2messages"
       VpcEndpointType: Interface
       PrivateDnsEnabled: true
-      SubnetIds: [ !Ref PoCSubnet ]
+      SubnetIds: [ !Ref PrivateSubnet ]
       SecurityGroupIds: [ !Ref VpceSecurityGroup ]
 
   SSMMessagesEndpoint:
@@ -242,9 +309,33 @@ Resources:
       ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssmmessages"
       VpcEndpointType: Interface
       PrivateDnsEnabled: true
-      SubnetIds: [ !Ref PoCSubnet ]
+      SubnetIds: [ !Ref PrivateSubnet ]
       SecurityGroupIds: [ !Ref VpceSecurityGroup ]
 
+  # --- Additional EC2 & Logs Endpoints (Requested) ---
+  EC2ServiceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: IsEndpointsEnabled
+    Properties:
+      VpcId: !Ref PoCVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ec2"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [ !Ref PrivateSubnet ]
+      SecurityGroupIds: [ !Ref VpceSecurityGroup ]
+
+  LogsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: IsEndpointsEnabled
+    Properties:
+      VpcId: !Ref PoCVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.logs"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [ !Ref PrivateSubnet ]
+      SecurityGroupIds: [ !Ref VpceSecurityGroup ]
+
+  # --- Gateway Endpoint ---
   S3Endpoint:
     Type: AWS::EC2::VPCEndpoint
     Condition: IsEndpointsEnabled
@@ -252,7 +343,7 @@ Resources:
       VpcId: !Ref PoCVPC
       ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
       VpcEndpointType: Gateway
-      RouteTableIds: [ !Ref PoCRouteTable ]
+      RouteTableIds: [ !Ref PrivateRouteTable ]
 
   # ============================================================
   # Security Groups
@@ -260,16 +351,15 @@ Resources:
   PoCSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow SSH and App Ports (8000-8003, 8888)
+      GroupDescription: Allow SSH and App Ports
       VpcId: !Ref PoCVPC
       SecurityGroupIngress:
-        # 1. SSH (22)
+        # SSH (22)
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
           CidrIp: !Ref AllowedCidr
-        
-        # 2. Port 8000 - 8003 (VPC内部 & AllowedCidr)
+        # App Ports
         - IpProtocol: tcp
           FromPort: 8000
           ToPort: 8003
@@ -278,8 +368,6 @@ Resources:
           FromPort: 8000
           ToPort: 8003
           CidrIp: !Ref AllowedCidr
-
-        # 3. Port 8888 (VPC内部 & AllowedCidr)
         - IpProtocol: tcp
           FromPort: 8888
           ToPort: 8888
@@ -288,7 +376,6 @@ Resources:
           FromPort: 8888
           ToPort: 8888
           CidrIp: !Ref AllowedCidr
-
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-sg"
@@ -308,6 +395,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy # Logs用に追加
 
   SSMInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -316,11 +404,11 @@ Resources:
         - !Ref SSMRole
 
   # ============================================================
-  # Compute (Linux)
+  # Compute (Linux) - In Private Subnet
   # ============================================================
   PoCInstance:
     Type: AWS::EC2::Instance
-    Condition: BuildLinux  # ★条件追加: Trueの時のみ作成
+    Condition: BuildLinux
     Properties:
       ImageId: !If 
         - IsAmazonLinux2
@@ -337,10 +425,10 @@ Resources:
             VolumeType: gp3
             DeleteOnTermination: true
       NetworkInterfaces: 
-        - AssociatePublicIpAddress: true
+        - AssociatePublicIpAddress: false
           DeviceIndex: 0
           GroupSet: [ !Ref PoCSecurityGroup ]
-          SubnetId: !Ref PoCSubnet
+          SubnetId: !Ref PrivateSubnet
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
@@ -352,11 +440,11 @@ Resources:
           Value: !Sub "${AWS::StackName}-linux"
 
   # ============================================================
-  # Compute (Windows Server) - Jump Host
+  # Compute (Windows Server) - In Private Subnet
   # ============================================================
   PoCWindowsInstance:
     Type: AWS::EC2::Instance
-    Condition: BuildWindows # ★条件追加: Trueの時のみ作成
+    Condition: BuildWindows
     Properties:
       ImageId: !Sub '{{resolve:ssm:/aws/service/ami-windows-latest/Windows_Server-${WindowsServerVersion}-English-Full-Base}}'
       InstanceType: !Ref WindowsInstanceType
@@ -370,31 +458,34 @@ Resources:
             VolumeType: gp3
             DeleteOnTermination: true
       NetworkInterfaces: 
-        - AssociatePublicIpAddress: true
+        - AssociatePublicIpAddress: false
           DeviceIndex: 0
           GroupSet: [ !Ref PoCSecurityGroup ]
-          SubnetId: !Ref PoCSubnet
+          SubnetId: !Ref PrivateSubnet
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-windows-${WindowsServerVersion}"
 
 Outputs:
   LinuxInstanceId:
-    Condition: BuildLinux # ★条件追加
+    Condition: BuildLinux
     Value: !Ref PoCInstance
-    Description: Linux Server ID
+    Description: Linux Server ID (Private)
   LinuxPrivateIP:
-    Condition: BuildLinux # ★条件追加
+    Condition: BuildLinux
     Value: !GetAtt PoCInstance.PrivateIp
-    Description: Use this IP in Windows Browser (e.g. http://10.0.x.x:8000)
+    Description: Private IP Address
   WindowsInstanceId:
-    Condition: BuildWindows # ★条件追加
+    Condition: BuildWindows
     Value: !Ref PoCWindowsInstance
-    Description: Jump Host (Connect via Fleet Manager)
+    Description: Windows Server ID (Private)
   ConnectToWindows:
-    Condition: BuildWindows # ★条件追加
+    Condition: BuildWindows
     Description: Fleet Manager RDP Link
     Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/systems-manager/fleet-manager/rdp?instanceId=${PoCWindowsInstance}"
   PrivateKeyLocation:
     Description: Retrieve Private Key content from here to decrypt Windows password
     Value: !Sub "/ec2/keypair/${PoCKeyPair}"
+  NetworkType:
+    Value: !If [ IsInternetEnabled, "Internet Enabled (NAT GW + IGW)", "Closed Network (No Internet)" ]
+    Description: Current Network Configuration
