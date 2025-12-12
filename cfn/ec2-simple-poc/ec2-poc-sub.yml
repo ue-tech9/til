@@ -399,7 +399,7 @@ Resources:
       SubnetId: !Ref PublicSubnet
       RouteTableId: !Ref PublicRouteTable
 
-  # 2. Firewall Route Table (Goes to NAT Gateway)
+  # 2. Firewall Route Table (New: Goes to NAT Gateway)
   # ------------------------------------------------------------
   FirewallRouteTable:
     Type: AWS::EC2::RouteTable
@@ -423,8 +423,7 @@ Resources:
       SubnetId: !Ref FirewallSubnet
       RouteTableId: !Ref FirewallRouteTable
 
-  # 3. Private Route Table (Modified: Goes to NFW Endpoint)
-  # ------------------------------------------------------------
+  # 3. Private Route Table (Goes to NAT GW initially)
   PrivateRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -433,14 +432,16 @@ Resources:
         - Key: Name
           Value: !Sub "${AWS::StackName}-private-rt"
 
+  # Note: 
+  # To enable Firewall inspection, you will manually update this Route
+  # to point to the "Gateway Load Balancer Endpoint" (NFW) instead of NatGateway.
   PrivateRouteToNat:
     Type: AWS::EC2::Route
     Condition: IsInternetEnabled
     Properties:
       RouteTableId: !Ref PrivateRouteTable
       DestinationCidrBlock: 0.0.0.0/0
-      # Change from NatGatewayId to VpcEndpointId (NFW)
-      VpcEndpointId: !Select [0, !GetAtt NetworkFirewall.EndpointIds]
+      NatGatewayId: !Ref NatGateway
 
   PrivateSubnetRouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation

@@ -179,3 +179,34 @@ git branch -d docs/add-workflow-guide
 * `fix: correct typo in okta setup` (修正)
 * `feat: add setup script` (機能追加)
 * `chore: clean up unused files` (雑務)
+
+
+### ローカルブランチ一括削除手順
+
+念のため、現在どのようなブランチがあるか確認してから実行することをお勧めします。
+
+#### 1\. mainに戻り、最新化する
+
+削除対象に含まれないよう、まずは安全地帯（main）に移動します。
+
+```bash
+git checkout main
+git pull origin main
+```
+
+#### 2\. 一括削除コマンドを実行する
+
+`main` という文字が含まれるブランチ**以外**を、すべて強制削除（`-D`）します。
+
+```bash
+git branch | grep -v "main" | xargs git branch -D
+```
+
+-----
+
+### コマンドの解説
+
+  * `git branch`: ローカルブランチの一覧を出力。
+  * `grep -v "main"`: "main" という文字列を含む行を**除外**（Invert match）して抽出。
+  * `xargs git branch -D`: 抽出されたブランチ名を引数として受け取り、順番に `git branch -D`（強制削除）を実行。
+
