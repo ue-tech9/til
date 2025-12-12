@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Full Stack EC2 PoC (Public/Private Subnets + R53 Private DNS + VPC Endpoints)
+Description: Full Stack EC2 PoC with Network Firewall (Public/Private/NFW Subnets + R53 Private DNS + VPC Endpoints + NFW)
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -184,8 +184,129 @@ Resources:
         - Key: Name
           Value: !Sub "${AWS::StackName}-private-subnet"
 
+  # Network Firewall Subnet
+  FirewallSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref PoCVPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Ref TargetAZ
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-nfw-subnet"
+
   # ============================================================
-  # Route 53 Private Hosted Zone & Records
+  # Network Firewall Resources
+  # ============================================================
+  
+  # 1. Stateless Rule Group (Pass All)
+  NFWRuleGroup:
+    Type: AWS::NetworkFirewall::RuleGroup
+    Properties:
+      RuleGroupName: !Sub "${AWS::StackName}-allow-all-rg"
+      Type: STATELESS
+      Capacity: 100
+      RuleGroup:
+        RulesSource:
+          StatelessRulesAndCustomActions:
+            StatelessRules:
+              - Priority: 1
+                RuleDefinition:
+                  Actions: ["aws:pass"]
+                  MatchAttributes:
+                    Sources: [ { AddressDefinition: "0.0.0.0/0" } ]
+                    Destinations: [ { AddressDefinition: "0.0.0.0/0" } ]
+                    Protocols: [] # All protocols
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-allow-all-rg"
+
+  # 2. Firewall Policy
+  NFWPolicy:
+    Type: AWS::NetworkFirewall::FirewallPolicy
+    Properties:
+      FirewallPolicyName: !Sub "${AWS::StackName}-policy"
+      FirewallPolicy:
+        StatelessDefaultActions: ["aws:forward_to_sfe"]
+        StatelessFragmentDefaultActions: ["aws:forward_to_sfe"]
+        StatelessRuleGroupReferences:
+          - ResourceArn: !Ref NFWRuleGroup
+            Priority: 10
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-policy"
+
+  # 3. Network Firewall Instance
+  NetworkFirewall:
+    Type: AWS::NetworkFirewall::Firewall
+    Properties:
+      FirewallName: !Sub "${AWS::StackName}-nfw"
+      FirewallPolicyArn: !Ref NFWPolicy
+      VpcId: !Ref PoCVPC
+      SubnetMappings:
+        - SubnetId: !Ref FirewallSubnet
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-nfw"
+
+  # ============================================================
+  # Route 53 Resolver DNS Firewall
+  # ============================================================
+  DnsFwDomainListAllow:
+    Type: AWS::Route53Resolver::FirewallDomainList
+    Properties:
+      Name: !Sub "${AWS::StackName}-allow-list"
+      Domains:
+        - "*.amazonaws.com"
+        - "*.aws.amazon.com"
+        - "*.awsapps.com"
+        - "*.okta.com"
+        - "*.oktacdn.com"
+        - "*.cloudfront.net"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-allow-list"
+
+  DnsFwDomainListAlertAll:
+    Type: AWS::Route53Resolver::FirewallDomainList
+    Properties:
+      Name: !Sub "${AWS::StackName}-alert-all-list"
+      Domains:
+        - "*"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-alert-all-list"
+
+  DnsFwRuleGroup:
+    Type: AWS::Route53Resolver::FirewallRuleGroup
+    Properties:
+      Name: !Sub "${AWS::StackName}-rule-group"
+      FirewallRules:
+        - FirewallDomainListId: !Ref DnsFwDomainListAllow
+          Priority: 100
+          Action: ALLOW
+        - FirewallDomainListId: !Ref DnsFwDomainListAlertAll
+          Priority: 200
+          Action: ALERT
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-rule-group"
+
+  DnsFwAssociation:
+    Type: AWS::Route53Resolver::FirewallRuleGroupAssociation
+    Properties:
+      Name: !Sub "${AWS::StackName}-fw-assoc"
+      FirewallRuleGroupId: !Ref DnsFwRuleGroup
+      Priority: 101
+      VpcId: !Ref PoCVPC
+      MutationProtection: DISABLED
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-fw-assoc"
+
+  # ============================================================
+  # Route 53 Private Hosted Zone
   # ============================================================
   PoCPrivateHostedZone:
     Type: AWS::Route53::HostedZone
@@ -200,7 +321,6 @@ Resources:
         - Key: Name
           Value: !Sub "${AWS::StackName}-hosted-zone"
 
-  # A Record for Linux Instance (hub.domain)
   LinuxDnsRecord:
     Type: AWS::Route53::RecordSet
     Condition: BuildLinux
@@ -213,7 +333,7 @@ Resources:
         - !GetAtt PoCInstance.PrivateIp
 
   # ============================================================
-  # Internet Gateway (Optional)
+  # Internet Gateway
   # ============================================================
   PoCIGW:
     Type: AWS::EC2::InternetGateway
@@ -231,7 +351,7 @@ Resources:
       InternetGatewayId: !Ref PoCIGW
 
   # ============================================================
-  # NAT Gateway (Optional) - Only created if InternetEnabled
+  # NAT Gateway
   # ============================================================
   NatEIP:
     Type: AWS::EC2::EIP
@@ -279,7 +399,31 @@ Resources:
       SubnetId: !Ref PublicSubnet
       RouteTableId: !Ref PublicRouteTable
 
-  # 2. Private Route Table (Goes to NAT GW if enabled, else Local only)
+  # 2. Firewall Route Table (New: Goes to NAT Gateway)
+  # ------------------------------------------------------------
+  FirewallRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref PoCVPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-nfw-rt"
+
+  FirewallRouteToNat:
+    Type: AWS::EC2::Route
+    Condition: IsInternetEnabled
+    Properties:
+      RouteTableId: !Ref FirewallRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  FirewallSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref FirewallSubnet
+      RouteTableId: !Ref FirewallRouteTable
+
+  # 3. Private Route Table (Goes to NAT GW initially)
   PrivateRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -288,6 +432,9 @@ Resources:
         - Key: Name
           Value: !Sub "${AWS::StackName}-private-rt"
 
+  # Note: 
+  # To enable Firewall inspection, you will manually update this Route
+  # to point to the "Gateway Load Balancer Endpoint" (NFW) instead of NatGateway.
   PrivateRouteToNat:
     Type: AWS::EC2::Route
     Condition: IsInternetEnabled
@@ -303,7 +450,7 @@ Resources:
       RouteTableId: !Ref PrivateRouteTable
 
   # ============================================================
-  # VPC Endpoints (Attached to Private Subnet)
+  # VPC Endpoints
   # ============================================================
   VpceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -317,7 +464,6 @@ Resources:
           ToPort: 443
           CidrIp: 10.0.0.0/16
 
-  # --- SSM Core Endpoints ---
   SSMEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Condition: IsEndpointsEnabled
@@ -351,7 +497,6 @@ Resources:
       SubnetIds: [ !Ref PrivateSubnet ]
       SecurityGroupIds: [ !Ref VpceSecurityGroup ]
 
-  # --- Additional EC2 & Logs Endpoints (Requested) ---
   EC2ServiceEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Condition: IsEndpointsEnabled
@@ -374,7 +519,6 @@ Resources:
       SubnetIds: [ !Ref PrivateSubnet ]
       SecurityGroupIds: [ !Ref VpceSecurityGroup ]
 
-  # --- Gateway Endpoint ---
   S3Endpoint:
     Type: AWS::EC2::VPCEndpoint
     Condition: IsEndpointsEnabled
@@ -393,12 +537,10 @@ Resources:
       GroupDescription: Allow SSH and App Ports
       VpcId: !Ref PoCVPC
       SecurityGroupIngress:
-        # SSH (22)
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
           CidrIp: !Ref AllowedCidr
-        # App Ports
         - IpProtocol: tcp
           FromPort: 8000
           ToPort: 8003
@@ -434,7 +576,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy # Logs用に追加
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
 
   SSMInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -443,7 +585,7 @@ Resources:
         - !Ref SSMRole
 
   # ============================================================
-  # Compute (Linux) - In Private Subnet
+  # Compute (Linux)
   # ============================================================
   PoCInstance:
     Type: AWS::EC2::Instance
@@ -472,14 +614,20 @@ Resources:
         Fn::Base64: !Sub |
           #!/bin/bash
           dnf update -y || yum update -y
-          rpm -q dnf && TOOL=dnf || TOOL=yum
-          $TOOL install -y git jq
+          if command -v amazon-linux-extras &> /dev/null; then
+            amazon-linux-extras install docker -y
+          else
+            dnf install -y docker
+          fi
+          systemctl start docker
+          systemctl enable docker
+          usermod -a -G docker root
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-linux"
 
   # ============================================================
-  # Compute (Windows Server) - In Private Subnet
+  # Compute (Windows Server)
   # ============================================================
   PoCWindowsInstance:
     Type: AWS::EC2::Instance
@@ -532,3 +680,12 @@ Outputs:
   NetworkType:
     Value: !If [ IsInternetEnabled, "Internet Enabled (NAT GW + IGW)", "Closed Network (No Internet)" ]
     Description: Current Network Configuration
+  DnsFirewallRuleGroup:
+    Value: !Ref DnsFwRuleGroup
+    Description: Route 53 Resolver DNS Firewall Rule Group ID
+  NetworkFirewallArn:
+    Value: !Ref NetworkFirewall
+    Description: Network Firewall ARN
+  NetworkFirewallEndpointIds:
+    Value: !Join [",", !GetAtt NetworkFirewall.EndpointIds]
+    Description: "List of VPCE IDs created by Network Firewall. Use these for Route Table targeting later."
