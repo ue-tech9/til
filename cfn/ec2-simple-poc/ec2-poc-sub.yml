@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Full Stack EC2 PoC with Network Firewall (Public/Private/NFW Subnets + R53 Private DNS + VPC Endpoints + NFW)
+Description: Full Stack EC2 PoC (Public/Private/NFW Subnets + R53 Private DNS + VPC Endpoints + S3/Logs Reserves)
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -184,7 +184,7 @@ Resources:
         - Key: Name
           Value: !Sub "${AWS::StackName}-private-subnet"
 
-  # Network Firewall Subnet
+  # Network Firewall Subnet (Reserved for future NFW)
   FirewallSubnet:
     Type: AWS::EC2::Subnet
     Properties:
@@ -197,61 +197,7 @@ Resources:
           Value: !Sub "${AWS::StackName}-nfw-subnet"
 
   # ============================================================
-  # Network Firewall Resources
-  # ============================================================
-  
-  # 1. Stateless Rule Group (Pass All)
-  NFWRuleGroup:
-    Type: AWS::NetworkFirewall::RuleGroup
-    Properties:
-      RuleGroupName: !Sub "${AWS::StackName}-allow-all-rg"
-      Type: STATELESS
-      Capacity: 100
-      RuleGroup:
-        RulesSource:
-          StatelessRulesAndCustomActions:
-            StatelessRules:
-              - Priority: 1
-                RuleDefinition:
-                  Actions: ["aws:pass"]
-                  MatchAttributes:
-                    Sources: [ { AddressDefinition: "0.0.0.0/0" } ]
-                    Destinations: [ { AddressDefinition: "0.0.0.0/0" } ]
-                    Protocols: [] # All protocols
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-allow-all-rg"
-
-  # 2. Firewall Policy
-  NFWPolicy:
-    Type: AWS::NetworkFirewall::FirewallPolicy
-    Properties:
-      FirewallPolicyName: !Sub "${AWS::StackName}-policy"
-      FirewallPolicy:
-        StatelessDefaultActions: ["aws:forward_to_sfe"]
-        StatelessFragmentDefaultActions: ["aws:forward_to_sfe"]
-        StatelessRuleGroupReferences:
-          - ResourceArn: !Ref NFWRuleGroup
-            Priority: 10
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-policy"
-
-  # 3. Network Firewall Instance
-  NetworkFirewall:
-    Type: AWS::NetworkFirewall::Firewall
-    Properties:
-      FirewallName: !Sub "${AWS::StackName}-nfw"
-      FirewallPolicyArn: !Ref NFWPolicy
-      VpcId: !Ref PoCVPC
-      SubnetMappings:
-        - SubnetId: !Ref FirewallSubnet
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-nfw"
-
-  # ============================================================
-  # Route 53 Resolver DNS Firewall
+  # Route 53 Resolver DNS Firewall (Keeping as independent security layer)
   # ============================================================
   DnsFwDomainListAllow:
     Type: AWS::Route53Resolver::FirewallDomainList
@@ -261,8 +207,6 @@ Resources:
         - "*.amazonaws.com"
         - "*.aws.amazon.com"
         - "*.awsapps.com"
-        - "*.okta.com"
-        - "*.oktacdn.com"
         - "*.cloudfront.net"
       Tags:
         - Key: Name
@@ -433,8 +377,8 @@ Resources:
           Value: !Sub "${AWS::StackName}-private-rt"
 
   # Note: 
-  # To enable Firewall inspection, you will manually update this Route
-  # to point to the "Gateway Load Balancer Endpoint" (NFW) instead of NatGateway.
+  # This currently points to NatGateway. When NFW is created later,
+  # you will manually update this to point to the Gateway Load Balancer Endpoint.
   PrivateRouteToNat:
     Type: AWS::EC2::Route
     Condition: IsInternetEnabled
@@ -527,6 +471,49 @@ Resources:
       ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
       VpcEndpointType: Gateway
       RouteTableIds: [ !Ref PrivateRouteTable ]
+
+  # ============================================================
+  # Extra Resources (Logs & S3) - RESERVED
+  # ============================================================
+  ExtraLogGroup1:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "${AWS::StackName}-reserve-log-01"
+      RetentionInDays: 7
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-reserve-log-01"
+
+  ExtraLogGroup2:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "${AWS::StackName}-reserve-log-02"
+      RetentionInDays: 7
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-reserve-log-02"
+
+  ExtraLogGroup3:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "${AWS::StackName}-reserve-log-03"
+      RetentionInDays: 7
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-reserve-log-03"
+
+  ExtraS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-files-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-files"
 
   # ============================================================
   # Security Groups
@@ -680,12 +667,9 @@ Outputs:
   NetworkType:
     Value: !If [ IsInternetEnabled, "Internet Enabled (NAT GW + IGW)", "Closed Network (No Internet)" ]
     Description: Current Network Configuration
-  DnsFirewallRuleGroup:
-    Value: !Ref DnsFwRuleGroup
-    Description: Route 53 Resolver DNS Firewall Rule Group ID
-  NetworkFirewallArn:
-    Value: !Ref NetworkFirewall
-    Description: Network Firewall ARN
-  NetworkFirewallEndpointIds:
-    Value: !Join [",", !GetAtt NetworkFirewall.EndpointIds]
-    Description: "List of VPCE IDs created by Network Firewall. Use these for Route Table targeting later."
+  ReservedS3Bucket:
+    Value: !Ref ExtraS3Bucket
+    Description: Name of the reserved S3 Bucket
+  ReservedLogGroups:
+    Value: !Sub "${ExtraLogGroup1}, ${ExtraLogGroup2}, ${ExtraLogGroup3}"
+    Description: Names of the 3 reserved CloudWatch Log Groups

@@ -261,8 +261,6 @@ Resources:
         - "*.amazonaws.com"
         - "*.aws.amazon.com"
         - "*.awsapps.com"
-        - "*.okta.com"
-        - "*.oktacdn.com"
         - "*.cloudfront.net"
       Tags:
         - Key: Name
