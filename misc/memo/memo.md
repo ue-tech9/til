@@ -6,6 +6,12 @@
 
 https://docs.docker.com/engine/storage/volumes/
 
+https://docs.docker.com/engine/storage/bind-mounts/
+
+考慮事項と制約
+バインドマウントは、デフォルトでホスト上のファイルへの書き込みアクセス権を持ちます。
+
+バインドマウントを使用することで、コンテナ内で実行されているプロセスを介してホストファイルシステムを変更できるという副作用が生じます。これには、重要なシステムファイルやディレクトリの作成、変更、削除などが含まれます。この機能はセキュリティに影響を与える可能性があります。例えば、ホストシステム上のDocker以外のプロセスに影響を与える可能性があります。
 
 
 
@@ -119,6 +125,9 @@ https://docs.docker.com/engine/storage/volumes/
 
 ####################################################
 コンテナのログについて調査
+https://docs.docker.com/engine/logging/configure
+
+
 MONTH="2020-08"
 START="${MONTH}-01T00:00:00"
 END="$(date -d "${MONTH}-01 +1 month" +%Y-%m-01)T00:00:00"
@@ -185,6 +194,57 @@ find "${LOG_BASE}"
 
 || true
 → 何か失敗してもスクリプト全体は止めない
+
+####################################################
+
+Docker の json-file ログを サイズ＋世代数で回す設定
+
+# =========================================================
+# Docker(json-file) ログローテ設定（サイズ＋世代数）
+# =========================================================
+# 目的:
+# - /var/lib/docker/containers/.../*-json.log の肥大化防止
+# - ルートボリューム枯渇（EC2ごと死ぬ）を防ぐ
+#
+# 仕組み:
+# - max-size を超えるとローテ（ファイル切り替え）
+# - max-file の世代数だけ保持（超えたら古いものから削除）
+#
+# 例:
+# - max-size=50m, max-file=10 → 1コンテナあたり最大約500MBまで
+#   (厳密には多少前後するが、上限目安として十分使える)
+#
+# 注意:
+# - 既に起動しているコンテナには “即時反映” されないことがある
+#   → 基本は docker 再起動後にコンテナも再起動すると確実
+# =========================================================
+
+# 1) 現状ログドライバ確認（json-file なら今回の対象）
+docker info | grep -i "Logging Driver"
+
+# 2) 設定ファイル作成/更新
+sudo mkdir -p /etc/docker
+
+sudo tee /etc/docker/daemon.json > /dev/null <<'EOF'
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "50m",
+    "max-file": "10"
+  }
+}
+EOF
+
+# 3) 反映（Dockerデーモン再起動）
+sudo systemctl restart docker
+
+# 4) 反映確認（対象コンテナで確認）
+# ※ <container> は実在のコンテナ名/IDに置換
+docker inspect --format='{{.HostConfig.LogConfig.Type}} {{json .HostConfig.LogConfig.Config}}' <container>
+
+# 5) 肥大化の確認（上位を眺める）
+sudo du -h /var/lib/docker/containers/*/*-json.log 2>/dev/null | sort -h | tail -n 20
+
 
 
 
