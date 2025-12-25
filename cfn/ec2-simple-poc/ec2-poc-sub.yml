@@ -1,27 +1,31 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Full Stack EC2 PoC (Public/Private/NFW Subnets + R53 Private DNS + VPC Endpoints + S3/Logs Reserves)
+Description: Full Stack EC2 PoC (Public/Private/NFW Subnets + R53 Private DNS + VPC Endpoints + S3/Logs Reserves) - Extended with ASG counts (Linux/Windows Public/Private)
 
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
-      - Label: 
+      - Label:
           default: "① Linux Configuration"
         Parameters:
           - CreateLinuxInstance
           - OsVersion
           - InstanceType
           - LinuxVolumeSize
-      - Label: 
+          - LinuxPublicCount
+          - LinuxPrivateCount
+      - Label:
           default: "② Windows Configuration"
         Parameters:
           - CreateWindowsInstance
           - WindowsServerVersion
           - WindowsInstanceType
           - WindowsVolumeSize
-      - Label: 
+          - WindowsPublicCount
+          - WindowsPrivateCount
+      - Label:
           default: "③ Network & Access"
         Parameters:
-          - TargetAZ       
+          - TargetAZ
           - EnableInternetAccess
           - EnableVPCEndpoints
           - AllowedCidr
@@ -29,28 +33,43 @@ Metadata:
           default: "④ Private DNS (Route53)"
         Parameters:
           - PrivateDomainName
+      - Label:
+          default: "⑤ Legacy (Single EC2 Instance) - Keep but Disabled by default"
+        Parameters:
+          - EnableLegacySingleInstances
+
     ParameterLabels:
       CreateLinuxInstance:
-        default: "Create Linux Instance?"
+        default: "Enable Linux resources?"
       CreateWindowsInstance:
-        default: "Create Windows Instance?"
+        default: "Enable Windows resources?"
       EnableInternetAccess:
         default: "Create IGW & NAT Gateway?"
       EnableVPCEndpoints:
         default: "Create VPC Endpoints?"
       PrivateDomainName:
         default: "Private Hosted Zone Name"
+      LinuxPublicCount:
+        default: "Linux (Public) instance count"
+      LinuxPrivateCount:
+        default: "Linux (Private) instance count"
+      WindowsPublicCount:
+        default: "Windows (Public) instance count"
+      WindowsPrivateCount:
+        default: "Windows (Private) instance count"
+      EnableLegacySingleInstances:
+        default: "Enable Legacy single EC2 resources? (NOT recommended)"
 
 Parameters:
   TargetAZ:
     Description: Select the Availability Zone.
     Type: AWS::EC2::AvailabilityZone::Name
-  
+
   CreateLinuxInstance:
     Type: String
     Default: "true"
     AllowedValues: ["true", "false"]
-    Description: Select "true" to deploy Linux Server.
+    Description: Master switch for Linux resources (ASG). If false, Linux ASGs won't be created.
 
   OsVersion:
     Type: String
@@ -76,11 +95,26 @@ Parameters:
     MaxValue: 16000
     Description: Size of the root volume for Linux (GB).
 
+  # --- NEW: Linux counts (Public / Private) ---
+  LinuxPublicCount:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 50
+    Description: Number of Linux instances to deploy in Public subnet (ASG DesiredCapacity).
+
+  LinuxPrivateCount:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 50
+    Description: Number of Linux instances to deploy in Private subnet (ASG DesiredCapacity).
+
   CreateWindowsInstance:
     Type: String
     Default: "true"
     AllowedValues: ["true", "false"]
-    Description: Select "true" to deploy Windows Server.
+    Description: Master switch for Windows resources (ASG). If false, Windows ASGs won't be created.
 
   WindowsServerVersion:
     Type: String
@@ -106,7 +140,22 @@ Parameters:
     MinValue: 30
     MaxValue: 16000
     Description: Size of the root volume for Windows (GB).
-  
+
+  # --- NEW: Windows counts (Public / Private) ---
+  WindowsPublicCount:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 50
+    Description: Number of Windows instances to deploy in Public subnet (ASG DesiredCapacity).
+
+  WindowsPrivateCount:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 50
+    Description: Number of Windows instances to deploy in Private subnet (ASG DesiredCapacity).
+
   EnableInternetAccess:
     Type: String
     Default: "true"
@@ -129,12 +178,45 @@ Parameters:
     Default: "corp.internal"
     Description: The domain name for the Private Hosted Zone (e.g. corp.internal).
 
+  # --- NEW: Keep old single-instance resources but disable by default ---
+  EnableLegacySingleInstances:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: If true, legacy AWS::EC2::Instance resources (PoCInstance/PoCWindowsInstance) are created. Not recommended.
+
 Conditions:
-  BuildLinux: !Equals [ !Ref CreateLinuxInstance, "true" ]
-  BuildWindows: !Equals [ !Ref CreateWindowsInstance, "true" ]
+  # Legacy flag
+  UseLegacy: !Equals [ !Ref EnableLegacySingleInstances, "true" ]
+
   IsAmazonLinux2: !Equals [ !Ref OsVersion, "AmazonLinux2" ]
   IsInternetEnabled: !Equals [ !Ref EnableInternetAccess, "true" ]
   IsEndpointsEnabled: !Equals [ !Ref EnableVPCEndpoints, "true" ]
+
+  # Legacy single EC2 create conditions (kept)
+  BuildLinuxLegacy: !And [ !Condition UseLegacy, !Equals [ !Ref CreateLinuxInstance, "true" ] ]
+  BuildWindowsLegacy: !And [ !Condition UseLegacy, !Equals [ !Ref CreateWindowsInstance, "true" ] ]
+
+  # ASG create conditions (new)
+  CreateLinuxPublicASG: !And
+    - !Not [ !Condition UseLegacy ]
+    - !Equals [ !Ref CreateLinuxInstance, "true" ]
+    - !Not [ !Equals [ !Ref LinuxPublicCount, 0 ] ]
+
+  CreateLinuxPrivateASG: !And
+    - !Not [ !Condition UseLegacy ]
+    - !Equals [ !Ref CreateLinuxInstance, "true" ]
+    - !Not [ !Equals [ !Ref LinuxPrivateCount, 0 ] ]
+
+  CreateWindowsPublicASG: !And
+    - !Not [ !Condition UseLegacy ]
+    - !Equals [ !Ref CreateWindowsInstance, "true" ]
+    - !Not [ !Equals [ !Ref WindowsPublicCount, 0 ] ]
+
+  CreateWindowsPrivateASG: !And
+    - !Not [ !Condition UseLegacy ]
+    - !Equals [ !Ref CreateWindowsInstance, "true" ]
+    - !Not [ !Equals [ !Ref WindowsPrivateCount, 0 ] ]
 
 Resources:
   # ============================================================
@@ -166,7 +248,7 @@ Resources:
     Properties:
       VpcId: !Ref PoCVPC
       CidrBlock: 10.0.1.0/24
-      AvailabilityZone: !Ref TargetAZ 
+      AvailabilityZone: !Ref TargetAZ
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
@@ -178,7 +260,7 @@ Resources:
     Properties:
       VpcId: !Ref PoCVPC
       CidrBlock: 10.0.2.0/24
-      AvailabilityZone: !Ref TargetAZ 
+      AvailabilityZone: !Ref TargetAZ
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
@@ -265,9 +347,10 @@ Resources:
         - Key: Name
           Value: !Sub "${AWS::StackName}-hosted-zone"
 
+  # Legacy record (kept) - points to legacy single Linux instance
   LinuxDnsRecord:
     Type: AWS::Route53::RecordSet
-    Condition: BuildLinux
+    Condition: BuildLinuxLegacy
     Properties:
       HostedZoneId: !Ref PoCPrivateHostedZone
       Name: !Sub "hub.${PrivateDomainName}."
@@ -275,6 +358,19 @@ Resources:
       TTL: '300'
       ResourceRecords:
         - !GetAtt PoCInstance.PrivateIp
+
+  # ASG record (new) - Alias to internal NLB (Linux Private ASG)
+  LinuxDnsRecordAlias:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateLinuxPrivateASG
+    Properties:
+      HostedZoneId: !Ref PoCPrivateHostedZone
+      Name: !Sub "hub.${PrivateDomainName}."
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt LinuxInternalNLB.DNSName
+        HostedZoneId: !GetAtt LinuxInternalNLB.CanonicalHostedZoneID
+        EvaluateTargetHealth: false
 
   # ============================================================
   # Internet Gateway
@@ -344,7 +440,6 @@ Resources:
       RouteTableId: !Ref PublicRouteTable
 
   # 2. Firewall Route Table (New: Goes to NAT Gateway)
-  # ------------------------------------------------------------
   FirewallRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -376,9 +471,6 @@ Resources:
         - Key: Name
           Value: !Sub "${AWS::StackName}-private-rt"
 
-  # Note: 
-  # This currently points to NatGateway. When NFW is created later,
-  # you will manually update this to point to the Gateway Load Balancer Endpoint.
   PrivateRouteToNat:
     Type: AWS::EC2::Route
     Condition: IsInternetEnabled
@@ -572,27 +664,292 @@ Resources:
         - !Ref SSMRole
 
   # ============================================================
-  # Compute (Linux)
+  # Compute (ASG/LT) - Linux
+  # ============================================================
+  LinuxPublicLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Condition: CreateLinuxPublicASG
+    Properties:
+      LaunchTemplateName: !Sub "${AWS::StackName}-lt-linux-public"
+      LaunchTemplateData:
+        ImageId: !If
+          - IsAmazonLinux2
+          - "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2}}"
+          - "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref PoCKeyPair
+        IamInstanceProfile:
+          Arn: !GetAtt SSMInstanceProfile.Arn
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: !Ref LinuxVolumeSize
+              VolumeType: gp3
+              DeleteOnTermination: true
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: true
+            Groups: [ !Ref PoCSecurityGroup ]
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            dnf update -y || yum update -y
+            if command -v amazon-linux-extras &> /dev/null; then
+              amazon-linux-extras install docker -y
+            else
+              dnf install -y docker
+            fi
+            systemctl start docker
+            systemctl enable docker
+            usermod -a -G docker root
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub "${AWS::StackName}-linux-public"
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: !Sub "${AWS::StackName}-linux-public-vol"
+
+  LinuxPrivateLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Condition: CreateLinuxPrivateASG
+    Properties:
+      LaunchTemplateName: !Sub "${AWS::StackName}-lt-linux-private"
+      LaunchTemplateData:
+        ImageId: !If
+          - IsAmazonLinux2
+          - "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2}}"
+          - "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref PoCKeyPair
+        IamInstanceProfile:
+          Arn: !GetAtt SSMInstanceProfile.Arn
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: !Ref LinuxVolumeSize
+              VolumeType: gp3
+              DeleteOnTermination: true
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: false
+            Groups: [ !Ref PoCSecurityGroup ]
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            dnf update -y || yum update -y
+            if command -v amazon-linux-extras &> /dev/null; then
+              amazon-linux-extras install docker -y
+            else
+              dnf install -y docker
+            fi
+            systemctl start docker
+            systemctl enable docker
+            usermod -a -G docker root
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub "${AWS::StackName}-linux-private"
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: !Sub "${AWS::StackName}-linux-private-vol"
+
+  LinuxPublicASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Condition: CreateLinuxPublicASG
+    Properties:
+      VPCZoneIdentifier: [ !Ref PublicSubnet ]
+      MinSize: "0"
+      MaxSize: !Ref LinuxPublicCount
+      DesiredCapacity: !Ref LinuxPublicCount
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LinuxPublicLaunchTemplate
+        Version: !GetAtt LinuxPublicLaunchTemplate.LatestVersionNumber
+      HealthCheckType: EC2
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-linux-public"
+          PropagateAtLaunch: true
+
+  # Internal NLB for hub.<domain> (Linux Private ASG)
+  LinuxInternalNLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Condition: CreateLinuxPrivateASG
+    Properties:
+      Name: !Sub "${AWS::StackName}-hub-nlb"
+      Type: network
+      Scheme: internal
+      Subnets: [ !Ref PrivateSubnet ]
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-hub-nlb"
+
+  LinuxNlbTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Condition: CreateLinuxPrivateASG
+    Properties:
+      Name: !Sub "${AWS::StackName}-hub-tg"
+      VpcId: !Ref PoCVPC
+      Port: 8888
+      Protocol: TCP
+      TargetType: instance
+      HealthCheckProtocol: TCP
+
+  LinuxNlbListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: CreateLinuxPrivateASG
+    Properties:
+      LoadBalancerArn: !Ref LinuxInternalNLB
+      Port: 8888
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref LinuxNlbTargetGroup
+
+  LinuxPrivateASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Condition: CreateLinuxPrivateASG
+    Properties:
+      VPCZoneIdentifier: [ !Ref PrivateSubnet ]
+      MinSize: "0"
+      MaxSize: !Ref LinuxPrivateCount
+      DesiredCapacity: !Ref LinuxPrivateCount
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LinuxPrivateLaunchTemplate
+        Version: !GetAtt LinuxPrivateLaunchTemplate.LatestVersionNumber
+      TargetGroupARNs:
+        - !Ref LinuxNlbTargetGroup
+      HealthCheckType: EC2
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-linux-private"
+          PropagateAtLaunch: true
+
+  # ============================================================
+  # Compute (ASG/LT) - Windows
+  # ============================================================
+  WindowsPublicLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Condition: CreateWindowsPublicASG
+    Properties:
+      LaunchTemplateName: !Sub "${AWS::StackName}-lt-windows-public"
+      LaunchTemplateData:
+        ImageId: !Sub "{{resolve:ssm:/aws/service/ami-windows-latest/Windows_Server-${WindowsServerVersion}-English-Full-Base}}"
+        InstanceType: !Ref WindowsInstanceType
+        KeyName: !Ref PoCKeyPair
+        IamInstanceProfile:
+          Arn: !GetAtt SSMInstanceProfile.Arn
+        BlockDeviceMappings:
+          - DeviceName: /dev/sda1
+            Ebs:
+              VolumeSize: !Ref WindowsVolumeSize
+              VolumeType: gp3
+              DeleteOnTermination: true
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: true
+            Groups: [ !Ref PoCSecurityGroup ]
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub "${AWS::StackName}-windows-${WindowsServerVersion}-public"
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: !Sub "${AWS::StackName}-windows-${WindowsServerVersion}-public-vol"
+
+  WindowsPrivateLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Condition: CreateWindowsPrivateASG
+    Properties:
+      LaunchTemplateName: !Sub "${AWS::StackName}-lt-windows-private"
+      LaunchTemplateData:
+        ImageId: !Sub "{{resolve:ssm:/aws/service/ami-windows-latest/Windows_Server-${WindowsServerVersion}-English-Full-Base}}"
+        InstanceType: !Ref WindowsInstanceType
+        KeyName: !Ref PoCKeyPair
+        IamInstanceProfile:
+          Arn: !GetAtt SSMInstanceProfile.Arn
+        BlockDeviceMappings:
+          - DeviceName: /dev/sda1
+            Ebs:
+              VolumeSize: !Ref WindowsVolumeSize
+              VolumeType: gp3
+              DeleteOnTermination: true
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: false
+            Groups: [ !Ref PoCSecurityGroup ]
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub "${AWS::StackName}-windows-${WindowsServerVersion}-private"
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: !Sub "${AWS::StackName}-windows-${WindowsServerVersion}-private-vol"
+
+  WindowsPublicASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Condition: CreateWindowsPublicASG
+    Properties:
+      VPCZoneIdentifier: [ !Ref PublicSubnet ]
+      MinSize: "0"
+      MaxSize: !Ref WindowsPublicCount
+      DesiredCapacity: !Ref WindowsPublicCount
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WindowsPublicLaunchTemplate
+        Version: !GetAtt WindowsPublicLaunchTemplate.LatestVersionNumber
+      HealthCheckType: EC2
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-windows-${WindowsServerVersion}-public"
+          PropagateAtLaunch: true
+
+  WindowsPrivateASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Condition: CreateWindowsPrivateASG
+    Properties:
+      VPCZoneIdentifier: [ !Ref PrivateSubnet ]
+      MinSize: "0"
+      MaxSize: !Ref WindowsPrivateCount
+      DesiredCapacity: !Ref WindowsPrivateCount
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WindowsPrivateLaunchTemplate
+        Version: !GetAtt WindowsPrivateLaunchTemplate.LatestVersionNumber
+      HealthCheckType: EC2
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-windows-${WindowsServerVersion}-private"
+          PropagateAtLaunch: true
+
+  # ============================================================
+  # Compute (Legacy Single EC2) - Kept but Disabled by default
   # ============================================================
   PoCInstance:
     Type: AWS::EC2::Instance
-    Condition: BuildLinux
+    Condition: BuildLinuxLegacy
     Properties:
-      ImageId: !If 
+      ImageId: !If
         - IsAmazonLinux2
-        - '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2}}'
-        - '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+        - "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2}}"
+        - "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"
       InstanceType: !Ref InstanceType
       KeyName: !Ref PoCKeyPair
       IamInstanceProfile: !Ref SSMInstanceProfile
       AvailabilityZone: !Ref TargetAZ
-      BlockDeviceMappings: 
+      BlockDeviceMappings:
         - DeviceName: /dev/xvda
           Ebs:
             VolumeSize: !Ref LinuxVolumeSize
             VolumeType: gp3
             DeleteOnTermination: true
-      NetworkInterfaces: 
+      NetworkInterfaces:
         - AssociatePublicIpAddress: false
           DeviceIndex: 0
           GroupSet: [ !Ref PoCSecurityGroup ]
@@ -611,65 +968,97 @@ Resources:
           usermod -a -G docker root
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-linux"
+          Value: !Sub "${AWS::StackName}-linux-legacy"
 
-  # ============================================================
-  # Compute (Windows Server)
-  # ============================================================
   PoCWindowsInstance:
     Type: AWS::EC2::Instance
-    Condition: BuildWindows
+    Condition: BuildWindowsLegacy
     Properties:
-      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-windows-latest/Windows_Server-${WindowsServerVersion}-English-Full-Base}}'
+      ImageId: !Sub "{{resolve:ssm:/aws/service/ami-windows-latest/Windows_Server-${WindowsServerVersion}-English-Full-Base}}"
       InstanceType: !Ref WindowsInstanceType
       KeyName: !Ref PoCKeyPair
       IamInstanceProfile: !Ref SSMInstanceProfile
       AvailabilityZone: !Ref TargetAZ
-      BlockDeviceMappings: 
+      BlockDeviceMappings:
         - DeviceName: /dev/sda1
           Ebs:
             VolumeSize: !Ref WindowsVolumeSize
             VolumeType: gp3
             DeleteOnTermination: true
-      NetworkInterfaces: 
+      NetworkInterfaces:
         - AssociatePublicIpAddress: false
           DeviceIndex: 0
           GroupSet: [ !Ref PoCSecurityGroup ]
           SubnetId: !Ref PrivateSubnet
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-windows-${WindowsServerVersion}"
+          Value: !Sub "${AWS::StackName}-windows-${WindowsServerVersion}-legacy"
 
 Outputs:
-  LinuxInstanceId:
-    Condition: BuildLinux
-    Value: !Ref PoCInstance
-    Description: Linux Server ID (Private)
-  LinuxPrivateIP:
-    Condition: BuildLinux
-    Value: !GetAtt PoCInstance.PrivateIp
-    Description: Private IP Address
-  LinuxDnsName:
-    Condition: BuildLinux
+  # --- ASG outputs (new) ---
+  LinuxPublicASGName:
+    Condition: CreateLinuxPublicASG
+    Value: !Ref LinuxPublicASG
+    Description: Linux Public ASG name
+
+  LinuxPrivateASGName:
+    Condition: CreateLinuxPrivateASG
+    Value: !Ref LinuxPrivateASG
+    Description: Linux Private ASG name
+
+  LinuxHubDnsName:
+    Condition: CreateLinuxPrivateASG
     Value: !Sub "hub.${PrivateDomainName}"
-    Description: Private DNS Record for Linux
+    Description: Private DNS (Alias -> Internal NLB -> Linux Private ASG)
+
+  WindowsPublicASGName:
+    Condition: CreateWindowsPublicASG
+    Value: !Ref WindowsPublicASG
+    Description: Windows Public ASG name
+
+  WindowsPrivateASGName:
+    Condition: CreateWindowsPrivateASG
+    Value: !Ref WindowsPrivateASG
+    Description: Windows Private ASG name
+
+  # --- Legacy outputs (kept) ---
+  LinuxInstanceId:
+    Condition: BuildLinuxLegacy
+    Value: !Ref PoCInstance
+    Description: Linux Server ID (Legacy / Private)
+
+  LinuxPrivateIP:
+    Condition: BuildLinuxLegacy
+    Value: !GetAtt PoCInstance.PrivateIp
+    Description: Private IP Address (Legacy)
+
+  LinuxDnsName:
+    Condition: BuildLinuxLegacy
+    Value: !Sub "hub.${PrivateDomainName}"
+    Description: Private DNS Record for Linux (Legacy - A record to private IP)
+
   WindowsInstanceId:
-    Condition: BuildWindows
+    Condition: BuildWindowsLegacy
     Value: !Ref PoCWindowsInstance
-    Description: Windows Server ID (Private)
+    Description: Windows Server ID (Legacy / Private)
+
   ConnectToWindows:
-    Condition: BuildWindows
-    Description: Fleet Manager RDP Link
+    Condition: BuildWindowsLegacy
+    Description: Fleet Manager RDP Link (Legacy)
     Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/systems-manager/fleet-manager/rdp?instanceId=${PoCWindowsInstance}"
+
   PrivateKeyLocation:
     Description: Retrieve Private Key content from here to decrypt Windows password
     Value: !Sub "/ec2/keypair/${PoCKeyPair}"
+
   NetworkType:
     Value: !If [ IsInternetEnabled, "Internet Enabled (NAT GW + IGW)", "Closed Network (No Internet)" ]
     Description: Current Network Configuration
+
   ReservedS3Bucket:
     Value: !Ref ExtraS3Bucket
     Description: Name of the reserved S3 Bucket
+
   ReservedLogGroups:
     Value: !Sub "${ExtraLogGroup1}, ${ExtraLogGroup2}, ${ExtraLogGroup3}"
     Description: Names of the 3 reserved CloudWatch Log Groups
