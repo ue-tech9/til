@@ -636,6 +636,59 @@ Resources:
           FromPort: 8888
           ToPort: 8888
           CidrIp: !Ref AllowedCidr
+
+        # DNS
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 10.0.0.0/16
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 10.0.0.0/16
+
+        # Kerberos
+        - IpProtocol: udp
+          FromPort: 88
+          ToPort: 88
+          CidrIp: 10.0.0.0/16
+        - IpProtocol: tcp
+          FromPort: 88
+          ToPort: 88
+          CidrIp: 10.0.0.0/16
+
+        # kpasswd (パスワード変更等)
+        - IpProtocol: udp
+          FromPort: 464
+          ToPort: 464
+          CidrIp: 10.0.0.0/16
+        - IpProtocol: tcp
+          FromPort: 464
+          ToPort: 464
+          CidrIp: 10.0.0.0/16
+
+        # LDAP（ドメイン参加/照会）
+        - IpProtocol: udp
+          FromPort: 389
+          ToPort: 389
+          CidrIp: 10.0.0.0/16
+        - IpProtocol: tcp
+          FromPort: 389
+          ToPort: 389
+          CidrIp: 10.0.0.0/16
+
+        # LDAPS（証明書/暗号化LDAP）
+        - IpProtocol: tcp
+          FromPort: 636
+          ToPort: 636
+          CidrIp: 10.0.0.0/16
+
+        # SMB/CIFS（共有・一部のAD連携で使用）
+        - IpProtocol: tcp
+          FromPort: 445
+          ToPort: 445
+          CidrIp: 10.0.0.0/16
+
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-sg"
